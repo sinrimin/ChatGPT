@@ -2,7 +2,7 @@
 Standard ChatGPT
 """
 import logging
-logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(funcName)s - %(message)s")
+logging.basicConfig(filename="chatbot.log", format="%(asctime)s - %(name)s - %(levelname)s - %(funcName)s - %(message)s")
 def logger(is_timed):
     def decorator(func):
         from functools import wraps
@@ -28,6 +28,8 @@ import uuid
 from os import environ
 from os import getenv
 from os.path import exists
+import sys
+from colorama import Fore, Back, Style, init
 
 import requests
 from OpenAIAuth import Authenticator, Error as AuthError
@@ -70,6 +72,7 @@ class Chatbot:
         self.conversation_mapping = {}
         self.conversation_id_prev_queue = []
         self.parent_id_prev_queue = []
+        self.encoding = "utf-8"
         if "email" in config and "password" in config:
             pass
         elif "access_token" in config:
@@ -134,7 +137,7 @@ class Chatbot:
         conversation_id=None,
         parent_id=None,
         timeout=360,
-        # gen_title=True,
+        gen_title=False,
     ):
         """
         Ask a question to the chatbot
@@ -162,6 +165,7 @@ class Chatbot:
         parent_id = parent_id or self.parent_id
         if conversation_id is None and parent_id is None:  # new conversation
             parent_id = str(uuid.uuid4())
+            gen_title = True
             log.debug(f"New conversation, setting parent_id to new UUID4: {parent_id}")
 
         if conversation_id is not None and parent_id is None:
@@ -203,6 +207,10 @@ class Chatbot:
             stream=True,
         )
         self.__check_response(response)
+        if self.encoding != None:
+          response.encoding = self.encoding
+        else:
+          response.encoding = response.apparent_encoding
         for line in response.iter_lines():
             line = str(line)[2:-1]
             if line == "Internal Server Error":
@@ -245,6 +253,8 @@ class Chatbot:
             self.parent_id = parent_id
         if conversation_id is not None:
             self.conversation_id = conversation_id
+        if gen_title:
+            self.gen_title(conversation_id, parent_id)
 
     @logger(is_timed=False)
     def __check_fields(self, data: dict) -> bool:
@@ -276,22 +286,27 @@ class Chatbot:
         """
         url = BASE_URL + f"api/conversations?offset={offset}&limit={limit}"
         response = self.session.get(url)
+        if self.encoding != None:
+          response.encoding = self.encoding
+        else:
+          response.encoding = response.apparent_encoding
         self.__check_response(response)
         data = json.loads(response.text)
         return data["items"]
 
     @logger(is_timed=True)
-    def get_msg_history(self, convo_id, encoding=None):
+    def get_msg_history(self, convo_id):
         """
         Get message history
         :param id: UUID of conversation
-        :param encoding: String
         """
         url = BASE_URL + f"api/conversation/{convo_id}"
         response = self.session.get(url)
+        if self.encoding != None:
+          response.encoding = self.encoding
+        else:
+          response.encoding = response.apparent_encoding
         self.__check_response(response)
-        if encoding != None:
-            response.encoding = encoding
         data = json.loads(response.text)
         return data
 
@@ -329,6 +344,8 @@ class Chatbot:
         url = BASE_URL + f"api/conversation/{convo_id}"
         response = self.session.patch(url, data='{"is_visible": false}')
         self.__check_response(response)
+        self.conversation_id = None
+        self.parent_id = None
 
     @logger(is_timed=True)
     def clear_conversations(self):
@@ -381,10 +398,13 @@ def get_input(prompt):
 
     # Read lines of input until the user enters an empty line
     while True:
-        line = input()
-        if line == "":
-            break
-        lines.append(line)
+        try:
+            line = input()
+            if line == "":
+                break
+            lines.append(line)
+        except KeyboardInterrupt:
+            sys.exit(0)
 
     # Join the lines, separated by newlines, and store the result
     user_input = "\n".join(lines)
@@ -411,16 +431,16 @@ def configure():
         with open(config_file, encoding="utf-8") as f:
             config = json.load(f)
     else:
-        print("No config file found.")
+        print(f"{Fore.RED}No config file found.{Style.RESET_ALL}")
         raise Exception("No config file found.")
     return config
 
 @logger(is_timed=False)
 def main(config: dict):
     """
-    Main function for the chatGPT program.
+    Main function for the ChatGPT program.
     """
-    print("Logging in...")
+    print(f"{Fore.GREEN}Logging in...{Style.RESET_ALL}")
     chatbot = Chatbot(
         config,
         conversation_id=config.get("conversation_id"),
@@ -428,71 +448,157 @@ def main(config: dict):
     )
 
     def handle_commands(command: str) -> bool:
-        if command == "!help":
+        if command == "!help" or command == "help":
             print(
-                """
-            !help - Show this message
-            !reset - Forget the current conversation
-            !config - Show the current configuration
-            !rollback x - Rollback the conversation (x being the number of messages to rollback)
-            !exit - Exit this program
-            !setconversation - Changes the conversation
-            """,
+f"""
+{Fore.LIGHTBLACK_EX}
+Commands:
+    !help - Show this message
+    !reset - Forget the current conversation
+    !rollback x - Rollback the conversation (x being the number of messages to rollback)
+    !quit - Exit this program
+    !set - Changes the conversation
+    !list - List last 20 conversations
+    !rm - Remove conversation
+    !title - Change current conversation title
+    !history - Show the chat history of conversation
+{Style.RESET_ALL}
+{Fore.RED}Press enter twice to submit your question.>>>>{Style.RESET_ALL}
+"""
             )
-        elif command == "!reset":
+        elif command == "!reset" or command == "reset":
             chatbot.reset_chat()
-            print("Chat session successfully reset.")
-        elif command == "!config":
+            print(f"{Fore.GREEN}Chat session successfully reset.{Style.RESET_ALL}")
+        elif command == "!config" or command == "config":
             print(json.dumps(chatbot.config, indent=4))
-        elif command.startswith("!rollback"):
+        elif command == "!list" or command == "list":
+            try:
+                for data in chatbot.get_conversations():
+                    print(f"[{Fore.BLUE}{data['id']}{Style.RESET_ALL}] {Fore.MAGENTA}{data['title']}{Style.RESET_ALL}")
+            except requests.exceptions.ProxyError:
+                log.exception("Can not access ChatGPT api.", stack_info=True)
+                print(f"{Fore.RED}Can not access ChatGPT api.{Style.RESET_ALL}")
+        elif command.startswith("!rollback ") or command.startswith("rollback "):
             # Default to 1 rollback if no number is specified
             try:
                 rollback = int(command.split(" ")[1])
             except IndexError:
-                logging.exception("No number specified, rolling back 1 message", stack_info=True)
+                log.exception("No number specified, rolling back 1 message", stack_info=True)
                 rollback = 1
             chatbot.rollback_conversation(rollback)
-            print(f"Rolled back {rollback} messages.")
-        elif command.startswith("!setconversation"):
+            print(f"{Fore.GREEN}Rolled back {rollback} messages.{Style.RESET_ALL}")
+        elif command.startswith("!set ") or command.startswith("set "):
             try:
+                print(f"{Fore.GREEN}Conversation has been changed, now showing message history:{Style.RESET_ALL}")
+                history = chatbot.get_msg_history(command.split(" ")[1])
                 chatbot.conversation_id = chatbot.config[
                     "conversation_id"
                 ] = command.split(" ")[1]
-                print("Conversation has been changed")
+                chatbot.parent_id = chatbot.config[
+                    "parent_id"
+                ] = history["current_node"]
+                mapping = history["mapping"]
+                for id in mapping:
+                    message = mapping[id]["message"]
+                    if mapping[id]["message"] is not None:
+                        if message["author"]["role"] == "user":
+                            print(f"{Back.YELLOW}You:{Style.RESET_ALL}{Fore.YELLOW}")
+                        else:
+                            print(f"{Back.CYAN}Chatbot:{Style.RESET_ALL}{Fore.CYAN}")
+                        for content in message["content"]["parts"]:
+                            print(content)
+                        print(Style.RESET_ALL)
             except IndexError:
                 log.exception("Please include conversation UUID in command", stack_info=True)
-                print("Please include conversation UUID in command")
-        elif command == "!exit":
-            exit(0)
+                print(f"{Fore.RED}Please include conversation UUID in command{Style.RESET_ALL}")
+            except requests.exceptions.ProxyError:
+                log.exception("Can not access ChatGPT api.", stack_info=True)
+                print(f"{Fore.RED}Can not access ChatGPT api.{Style.RESET_ALL}")
+        elif command.startswith("!rm ") or command.startswith("rm "):
+            try:
+                chatbot.delete_conversation(command.split(" ")[1])
+                print("Conversation has been deleted")
+            except IndexError:
+                print(f"{Fore.RED}Please include conversation UUID in command{Style.RESET_ALL}")
+            except requests.exceptions.ProxyError:
+                log.exception("Can not access ChatGPT api.", stack_info=True)
+                print(f"{Fore.RED}Can not access ChatGPT api.{Style.RESET_ALL}")
+        elif command.startswith("!title") or command.startswith("title "):
+            try:
+                chatbot.change_title(chatbot.conversation_id, command.split(" ")[1])
+                print(f"{Fore.GREEN}Conversation title has been changed{Style.RESET_ALL}")
+            except IndexError:
+                print(f"{Fore.RED}Please include conversation title in command{Style.RESET_ALL}")
+            except requests.exceptions.ProxyError:
+                log.exception("Can not access ChatGPT api.", stack_info=True)
+                print(f"{Fore.RED}Can not access ChatGPT api.{Style.RESET_ALL}")
+        elif command.startswith("!history ") or command.startswith("history "):
+            try:
+                history = chatbot.get_msg_history(command.split(" ")[1])
+                mapping = history["mapping"]
+                for id in mapping:
+                    message = mapping[id]["message"]
+                    if mapping[id]["message"] is not None:
+                        if message["author"]["role"] == "user":
+                            print(f"{Back.YELLOW}You:{Style.RESET_ALL}{Fore.YELLOW}")
+                        else:
+                            print(f"{Back.CYAN}Chatbot:{Style.RESET_ALL}{Fore.CYAN}")
+                        for content in message["content"]["parts"]:
+                            print(content)
+                        print(Style.RESET_ALL)
+            except IndexError:
+                print(f"{Fore.RED}Please include conversation UUID in command{Style.RESET_ALL}")
+            except requests.exceptions.ProxyError:
+                log.exception("Can not access ChatGPT api.", stack_info=True)
+                print(f"{Fore.RED}Can not access ChatGPT api.{Style.RESET_ALL}")
+        elif command == "!quit" or command == "quit":
+            sys.exit(0)
         else:
             return False
         return True
 
     while True:
-        prompt = get_input("\nYou:\n")
-        if prompt.startswith("!"):
-            if handle_commands(prompt):
-                continue
-
-        print("Chatbot: ")
-        prev_text = ""
-        for data in chatbot.ask(
-            prompt,
-        ):
-            message = data["message"][len(prev_text) :]
-            print(message, end="", flush=True)
-            prev_text = data["message"]
-        print()
+        prompt = get_input(f"\n{Back.YELLOW}You:{Style.RESET_ALL}{Fore.YELLOW}\n")
+        if handle_commands(prompt):
+            continue
+        if prompt == "":
+            print(f"{Fore.RED}Can not send blank, please type your questions.{Style.RESET_ALL}")
+            continue
+        print(f"{Back.CYAN}Chatbot:{Style.RESET_ALL}{Fore.CYAN}")
+        try:
+            prev_text = ""
+            for data in chatbot.ask(
+                prompt,
+            ):
+                message = data["message"][len(prev_text) :]
+                print(message, end="", flush=True)
+                prev_text = data["message"]
+            print(f"\n{Style.RESET_ALL}")
+        except requests.exceptions.ProxyError:
+            log.exception("Can not access ChatGPT api.", stack_info=True)
+            print(f"{Fore.RED}Can not access ChatGPT api.{Style.RESET_ALL}")
         # print(message["message"])
 
 
 if __name__ == "__main__":
+    init()
     print(
-        """
-        ChatGPT - A command-line interface to OpenAI's ChatGPT (https://chat.openai.com/chat)
-        Repo: github.com/acheong08/ChatGPT
-        """,
+f"""
+{Fore.CYAN}ChatGPT - A command-line interface to OpenAI's ChatGPT (https://chat.openai.com/chat)
+Repo: github.com/acheong08/ChatGPT{Style.RESET_ALL}
+{Fore.LIGHTBLACK_EX}
+Commands:
+    !help - Show this message
+    !reset - Forget the current conversation
+    !rollback x - Rollback the conversation (x being the number of messages to rollback)
+    !quit - Exit this program
+    !set - Changes the conversation
+    !list - List last 20 conversations
+    !rm - Remove conversation
+    !title - Change current conversation title
+    !history - Show the chat history of conversation
+{Style.RESET_ALL}
+{Fore.RED}Press enter twice to submit your question.>>>>{Style.RESET_ALL}
+"""
     )
-    print("Type '!help' to show a full list of commands")
-    print("Press enter twice to submit your question.\n")
     main(configure())
